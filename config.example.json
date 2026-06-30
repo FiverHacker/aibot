@@ -1,0 +1,14 @@
+{
+  "token": "YOUR_DISCORD_BOT_TOKEN",
+  "clientId": "YOUR_BOT_CLIENT_ID",
+  "guildId": "YOUR_GUILD_ID",
+  "ownerId": "YOUR_DISCORD_USER_ID",
+  "ai": {
+    "enabled": true,
+    "apiKey": "YOUR_API_KEY_OR_EMPTY_FOR_LOCAL",
+    "baseURL": "https://agentrouter.org/v1",
+    "model": "glm-5.2",
+    "systemPrompt": "You are a helpful AI assistant for a Discord server. You help with server management, moderation, answering questions, and engaging in conversation. Keep answers concise and helpful.",
+    "maxHistory": 20
+  }
+}
