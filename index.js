@@ -6,6 +6,17 @@ import config from './config.json' with { type: 'json' };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+if (!config.token || config.token.length < 10) {
+  console.error('Invalid bot token in config.json. Set DISCORD_TOKEN environment variable or fix config.json.');
+  process.exit(1);
+}
+
+// Override with environment variables if set
+if (process.env.DISCORD_TOKEN) config.token = process.env.DISCORD_TOKEN;
+if (process.env.AI_API_KEY) config.ai.apiKey = process.env.AI_API_KEY;
+if (process.env.AI_BASE_URL) config.ai.baseURL = process.env.AI_BASE_URL;
+if (process.env.OWNER_ID) config.ownerId = process.env.OWNER_ID;
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,

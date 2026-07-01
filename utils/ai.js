@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import config from '../config.json' with { type: 'json' };
 import { executeToolCall } from './moderation.js';
+import { MODERATION_TOOLS } from './moderation.js';
 
 function truncate(str, max = 1990) {
   if (typeof str === 'string' && str.length > max) {
@@ -22,89 +23,82 @@ function getClient() {
   return client;
 }
 
-const ACTION_PROMPT = `You are an AI Discord server manager. You have FULL access to manage the server.
+const ACTION_PROMPT = `You are an AI Discord server manager. You have FULL access to manage the server via tool calls.
 
-When the user asks you to DO something (kick, ban, purge, create channels/roles, setup server, send messages, etc.), you MUST include a JSON array of actions in your response. The JSON array can be anywhere in your text — at the start, middle, or end. You can also wrap it in conversation.
+When the user asks you to DO something (kick, ban, purge, create channels/roles, setup server, send messages, etc.), you MUST use a <tool_call> XML block. You can wrap it in conversation.
 
-Format: [{"action":"actionName","args":{...}}]
-
-Available actions:
-- sendToChannel: {"content", "channelId?"}
-- sendToUser: {"content", "userId"}
-- say: {"content"}
-- addRole: {"userId", "roleName"}
-- removeRole: {"userId", "roleName"}
-- kickUser: {"userId", "reason?"}
-- banUser: {"userId", "reason?"}
-- unbanUser: {"userId"}
-- timeoutUser: {"userId", "durationMinutes"}
-- purgeMessages: {"limit?"}
-- createChannel: {"name"}
-- deleteChannel: {"channelId?"}
-- renameChannel: {"name", "channelId?"}
-- announce: {"title", "message", "channelId?"}
-- createRole: {"name", "color?"}
-- setupServer: {} — Creates full gaming server with categories, channels, roles
-- deleteDuplicateRoles: {} — Deletes duplicate roles (keeps highest)
-- fixChannelPermissions: {} — Locks staff channels, makes announcements read-only
-- serverOwner: {}
-- memberCount: {}
-- serverInfo: {}
-- listChannels: {}
-- listRoles: {}
-- onlineMembers: {}
-- offlineMembers: {}
-- userInfo: {"userId"}
-- userJoinedAt: {"userId"}
-
-userId = @mention or Discord ID. channelId defaults to current channel.
+Format:
+<tool_call>
+<function=server.invoke tool="toolName" arguments={...json args...}>
+</function>
+</tool_call>
 
 Examples:
-"kick @user for spamming" -> "Done. [{"action":"kickUser","args":{"userId":"@user","reason":"spamming"}}]"
-"make rules and send to #rules" -> "Here are some rules I created:\\n1. Be respectful\\n2. No spam\\n[{"action":"sendToChannel","args":{"channelId":"RULES_ID","content":"**Rules**\\n..."}}]"
-"setup my server" -> "Setting up your server now! [{"action":"setupServer","args":{}}]"
-"who is the owner" -> "[{"action":"serverOwner","args":{}}]"
-"delete 50 messages" -> "Cleaning up. [{"action":"purgeMessages","args":{"limit":50}}]"
+- kick someone: Hello <tool_call>\n<function=server.invoke tool="kickUser" arguments={"userId":"@user","reason":"spamming"}>\n</function>\n</tool_call>
+- create a category: Creating category now! <tool_call>\n<function=server.invoke tool="createChannel" arguments={"name":"development","type":"category"}>\n</function>\n</tool_call>
+- create text channel under a category: <tool_call>\n<function=server.invoke tool="createChannel" arguments={"name":"general-chat","type":"text","parent":"development"}>\n</function>\n</tool_call>
+- send message: Done! <tool_call>\n<function=server.invoke tool="sendToChannel" arguments={"content":"Hello everyone!"}>\n</function>\n</tool_call>
+- list all channels: <tool_call>\n<function=server.invoke tool="listChannels" arguments={}>\n</function>\n</tool_call>
+- create role: <tool_call>\n<function=server.invoke tool="createRole" arguments={"name":"Developer","color":"#3498DB"}>\n</function>\n</tool_call>
+- delete all voice channels: <tool_call>\n<function=server.invoke tool="deleteChannelsByType" arguments={"type":"voice"}>\n</function>\n</tool_call>
+- set channel topic: <tool_call>\n<function=server.invoke tool="setChannelTopic" arguments={"topic":"Welcome to the server!","channelId":"rules"}>\n</function>\n</tool_call>
 
-For normal conversation (questions, jokes, advice), just respond with regular text — no JSON needed.`;
+Available tools: createChannel, deleteChannel, renameChannel, setChannelTopic, sendToChannel, sendToUser, say, addRole, removeRole, kickUser, banUser, unbanUser, timeoutUser, purgeMessages, announce, createRole, deleteRole, serverOwner, memberCount, serverInfo, listChannels, listRoles, onlineMembers, offlineMembers, userInfo, userJoinedAt, deleteAllChannels, deleteChannelsByType
 
-function extractJSON(text) {
-  // Try direct parse first (fast path for clean responses)
+When setting up a server: create categories first using createChannel with type="category", then create text channels with parent="categoryName". The AI decides the structure.
+
+For normal conversation (questions, jokes, advice), just respond with regular text — no tool calls needed.`;
+
+function extractXMLToolCalls(text) {
+  const results = [];
+  const regex = /<tool_call>\s*<function=server\.invoke tool="([^"]+)" arguments=(\{[\s\S]*?\})>\s*<\/function>\s*<\/tool_call>/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const args = JSON.parse(match[2]);
+      results.push({ action: match[1], args });
+    } catch (e) {
+      console.warn('Failed to parse tool_call arguments:', e.message);
+    }
+  }
+  return results.length > 0 ? results : null;
+}
+
+function extractJSONActions(text) {
   const trimmed = text.trim();
   if (trimmed.startsWith('[')) {
     try {
       const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(item => ({ action: item.action, args: item.args || {} }));
     } catch {}
   }
 
-  // Search for JSON array anywhere in text
-  const jsonMatch = text.match(/\[\s*\{[^[]*\}\s*\]/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-  }
-
-  // Try multi-line JSON with line breaks
   const blockMatch = text.match(/\[\s*\{[\s\S]*?\}\s*\]/);
   if (blockMatch) {
     try {
       const parsed = JSON.parse(blockMatch[0]);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed.map(item => ({ action: item.action, args: item.args || {} }));
     } catch {}
   }
 
   return null;
 }
 
+function extractActions(text) {
+  return extractXMLToolCalls(text) || extractJSONActions(text);
+}
+
+function stripActionBlocks(text) {
+  let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+  cleaned = cleaned.replace(/\[\s*\{[\s\S]*?\}\s*\]/g, '').trim();
+  return cleaned;
+}
+
 export async function askAI(userId, userName, message, channelName, context = null, enhancedMessage = null) {
   if (!config.ai.enabled) return null;
 
-  const isLocal = config.ai.baseURL?.includes('localhost') || config.ai.baseURL?.includes('127.0.0.1');
-  if (!isLocal && (!config.ai.apiKey || config.ai.apiKey === 'YOUR_NVIDIA_API_KEY')) {
-    return "AI is not configured yet. Please set a valid API key in config.json.";
+  if (!config.ai.apiKey || config.ai.apiKey.length < 10 || config.ai.apiKey.includes('YOUR_')) {
+    return "AI is not configured yet. Set a valid API key in config.json or use environment variable AI_API_KEY.";
   }
 
   if (!conversationHistory.has(userId)) {
@@ -119,12 +113,14 @@ export async function askAI(userId, userName, message, channelName, context = nu
     history.splice(0, 2);
   }
 
+  const canAct = context && context.userId === config.ownerId;
+
   const systemMessages = [
     { role: 'system', content: config.ai.systemPrompt },
     { role: 'system', content: `Current channel: #${channelName}` },
   ];
 
-  if (context && context.userId === config.ownerId) {
+  if (canAct) {
     systemMessages.push({ role: 'system', content: ACTION_PROMPT });
   } else if (context) {
     systemMessages.push({
@@ -147,31 +143,47 @@ export async function askAI(userId, userName, message, channelName, context = nu
       }
     }
 
-    const response = await openai.chat.completions.create({
+    const apiOptions = {
       model: config.ai.model,
       messages,
       max_tokens: 800,
       temperature: 0.7,
-    });
+    };
 
-    const text = response.choices[0]?.message?.content || '';
+    if (canAct) {
+      apiOptions.tools = MODERATION_TOOLS;
+    }
+
+    const response = await openai.chat.completions.create(apiOptions);
+
+    const choice = response.choices[0]?.message;
+    const text = choice?.content || '';
     const trimmed = text.trim();
 
-    // Try to extract and execute JSON actions
-    if (context && context.userId === config.ownerId) {
-      const actions = extractJSON(trimmed);
-      if (actions && actions.length > 0) {
-        const results = [];
-        for (const action of actions) {
-          const result = await executeToolCall(action.action, action.args || {}, context);
-          results.push(result.success ? result.result : result.error);
-        }
-        // If the AI also had conversational text before/after the JSON, prepend/append it
-        const cleanText = trimmed.replace(/\[\s*\{[\s\S]*?\}\s*\]/, '').trim();
-        const reply = truncate(results.join('\n'));
-        history.push({ role: 'assistant', content: reply });
-        return reply;
+    let actions = null;
+
+    if (canAct && choice?.tool_calls && choice.tool_calls.length > 0) {
+      actions = choice.tool_calls.map(tc => ({
+        action: tc.function.name,
+        args: JSON.parse(tc.function.arguments || '{}'),
+      }));
+    }
+
+    if (canAct && !actions) {
+      actions = extractActions(trimmed);
+    }
+
+    if (canAct && actions && actions.length > 0) {
+      const resultLines = [];
+      for (const action of actions) {
+        const result = await executeToolCall(action.action, action.args || {}, context);
+        resultLines.push(result.success ? result.result : result.error);
       }
+      const actionResults = resultLines.join('\n');
+      const cleanText = stripActionBlocks(trimmed);
+      const reply = truncate([cleanText, actionResults].filter(Boolean).join('\n\n'));
+      history.push({ role: 'assistant', content: reply });
+      return reply;
     }
 
     const finalReply = truncate(trimmed) || "I couldn't generate a response.";

@@ -17,7 +17,6 @@ async function safeReply(message, content) {
     await message.reply(content);
   } catch (err) {
     if (err.code === 50035) {
-      // Original message deleted — send to channel instead
       try {
         await message.channel.send(content);
       } catch (_) {}
@@ -44,14 +43,12 @@ export default {
       return;
     }
 
-    // Auto-reply system (after whitelist check)
     const autoReply = checkAutoReply(message.content);
     if (autoReply) {
       await safeReply(message, autoReply);
       return;
     }
 
-    // Only strip the bot's own mention, keep all others
     let userMessage = message.content;
     if (isMentioned) {
       const botMention = new RegExp(`<@!?${message.client.user.id}>`, 'g');
@@ -64,17 +61,6 @@ export default {
 
     const context = isDM ? null : { channel: message.channel, member: message.member, guild: message.guild, userId: message.author.id };
 
-    // Fast path: direct intent parsing for common commands
-    if (context && isOwner(message.author.id, config.ownerId)) {
-      const { parseAndExecute } = await import('../utils/moderation.js');
-      const result = await parseAndExecute(userMessage, context);
-      if (result) {
-        await safeReply(message, truncate(result));
-        return;
-      }
-    }
-
-    // AI handles everything else (actions via JSON, or normal chat)
     try {
       await message.channel.sendTyping();
     } catch (_) {}

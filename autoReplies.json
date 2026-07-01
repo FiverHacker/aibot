@@ -1,7 +1,3 @@
 {
-  "replies": {
-    "hello": "Hey there! Welcome! 👋",
-    "help": "Need help? Try `/help` to see all commands, or mention the bot to ask AI!",
-    "ping": "Pong! 🏓"
-  }
+  "replies": {}
 }
